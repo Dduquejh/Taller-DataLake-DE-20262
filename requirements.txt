@@ -1,0 +1,27 @@
+
+# Lectura de fuentes RSS y solicitudes HTTP
+feedparser>=6.0.11,<7.0
+requests>=2.32.3,<3.0
+beautifulsoup4>=4.12.3,<5.0
+lxml>=5.3.0,<7.0
+
+# Fechas, configuración y validación
+python-dateutil>=2.9.0,<3.0
+PyYAML>=6.0.2,<7.0
+pydantic>=2.10.0,<3.0
+pydantic-settings>=2.7.0,<3.0
+tenacity>=9.0.0,<10.0
+
+# Procesamiento de datos y almacenamiento Parquet
+pandas>=2.2.3,<3.0
+pyarrow>=18.1.0,<25.0
+
+# Integración con AWS: S3, Comprehend, Glue y Athena
+boto3>=1.36.0,<2.0
+
+# Pruebas y calidad del código
+pytest>=8.3.4,<10.0
+ruff>=0.9.0,<1.0
+
+# .env
+python-dotenv>=1.0.1,<2.0

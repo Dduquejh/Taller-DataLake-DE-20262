@@ -1,0 +1,17 @@
+
+sources:
+  - source_id: eltiempo_medellin
+    medium: El Tiempo
+    section: Medellín
+    url: https://www.eltiempo.com/rss/colombia_medellin.xml
+
+  - source_id: eltiempo_tecnosfera
+    medium: El Tiempo
+    section: Tecnología
+    url: https://www.eltiempo.com/rss/tecnosfera.xml
+
+  - source_id: eltiempo_deportes
+    medium: El Tiempo
+    section: Deportes
+    url: https://www.eltiempo.com/rss/deportes.xml
+
