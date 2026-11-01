@@ -1,4 +1,3 @@
-import io
 import json
 
 import pytest
@@ -6,6 +5,7 @@ import requests
 from botocore.exceptions import ClientError
 
 from src.pipeline import ingestion
+from tests.fakes import FakeS3
 
 
 FEED = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -35,53 +35,7 @@ MANIFEST_KEY = (
 )
 
 
-def client_error(code, status):
-    return ClientError(
-        {
-            "Error": {"Code": code},
-            "ResponseMetadata": {"HTTPStatusCode": status},
-        },
-        "S3",
-    )
-
-
-class FakeS3:
-    """S3 en memoria con las escrituras condicionales que usa la ingesta."""
-
-    def __init__(self):
-        self.objects = {}
-        self.versions = 0
-
-    def _etag(self, key):
-        return self.objects[key][1]
-
-    def get_object(self, Bucket, Key):
-        if Key not in self.objects:
-            raise client_error("NoSuchKey", 404)
-
-        body, etag = self.objects[Key]
-        return {"Body": io.BytesIO(body), "ETag": etag}
-
-    def head_object(self, Bucket, Key):
-        if Key not in self.objects:
-            raise client_error("404", 404)
-
-        return {"ETag": self._etag(Key)}
-
-    def put_object(self, Bucket, Key, Body, IfNoneMatch=None, IfMatch=None,
-                   **kwargs):
-        if IfNoneMatch == "*" and Key in self.objects:
-            raise client_error("PreconditionFailed", 412)
-
-        if IfMatch is not None and (
-            Key not in self.objects or self._etag(Key) != IfMatch
-        ):
-            raise client_error("PreconditionFailed", 412)
-
-        self.versions += 1
-        self.objects[Key] = (Body, f'"v{self.versions}"')
-        return {"ETag": self._etag(Key)}
-
+class ManifestS3(FakeS3):
     def manifest(self):
         return json.loads(self.objects[MANIFEST_KEY][0])
 
@@ -99,7 +53,7 @@ class FakeResponse:
 
 @pytest.fixture
 def s3(monkeypatch):
-    fake = FakeS3()
+    fake = ManifestS3()
     monkeypatch.setattr(ingestion, "s3", fake)
     monkeypatch.setattr(ingestion, "load_sources", lambda: SOURCES)
     monkeypatch.setattr(ingestion.time, "sleep", lambda seconds: None)

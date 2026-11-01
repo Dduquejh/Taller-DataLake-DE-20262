@@ -6,7 +6,7 @@ from airflow.exceptions import AirflowException
 from airflow.providers.standard.operators.python import PythonOperator
 
 from src.pipeline.ingestion import reprocess
-from src.pipeline.silver import build_silver
+from src.pipeline.silver import enrich_silver, prepare_silver, publish_silver
 
 
 def run_reprocess(**context):
@@ -28,10 +28,19 @@ def run_reprocess(**context):
         ) from exc
 
 
-def run_silver(**context):
-    """Reconstruye Silver desde Bronze sin volver a consultar los RSS."""
-    run_id = context["dag_run"].conf["run_id"]
-    return build_silver(run_id=run_id)
+def run_prepare(**context):
+    """Prepara el lote desde Bronze sin volver a consultar los RSS."""
+    return prepare_silver(run_id=context["dag_run"].conf["run_id"])
+
+
+def run_enrich(**context):
+    """Analiza solo los textos que aún no tienen un análisis vigente."""
+    return enrich_silver(run_id=context["dag_run"].conf["run_id"])
+
+
+def run_publish(**context):
+    """Publica el lote reprocesado en Silver."""
+    return publish_silver(run_id=context["dag_run"].conf["run_id"])
 
 
 with DAG(
@@ -48,11 +57,26 @@ with DAG(
         python_callable=run_reprocess,
     )
 
-    rebuild_silver_news = PythonOperator(
-        task_id="rebuild_silver_news",
-        python_callable=run_silver,
+    prepare_silver_news = PythonOperator(
+        task_id="prepare_silver_news",
+        python_callable=run_prepare,
+    )
+
+    enrich_with_comprehend = PythonOperator(
+        task_id="enrich_with_comprehend",
+        python_callable=run_enrich,
+    )
+
+    publish_silver_news = PythonOperator(
+        task_id="publish_silver_news",
+        python_callable=run_publish,
         pool="silver_writer",
     )
 
-    verify_existing_batch >> rebuild_silver_news
+    (
+        verify_existing_batch
+        >> prepare_silver_news
+        >> enrich_with_comprehend
+        >> publish_silver_news
+    )
 
