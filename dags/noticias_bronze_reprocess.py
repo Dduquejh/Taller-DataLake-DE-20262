@@ -6,6 +6,7 @@ from airflow.exceptions import AirflowException
 from airflow.providers.standard.operators.python import PythonOperator
 
 from src.pipeline.ingestion import reprocess
+from src.pipeline.silver import build_silver
 
 
 def run_reprocess(**context):
@@ -27,9 +28,15 @@ def run_reprocess(**context):
         ) from exc
 
 
+def run_silver(**context):
+    """Reconstruye Silver desde Bronze sin volver a consultar los RSS."""
+    run_id = context["dag_run"].conf["run_id"]
+    return build_silver(run_id=run_id)
+
+
 with DAG(
     dag_id="noticias_bronze_reprocess",
-    description="Verifica capturas ya almacenadas en Bronze/S3",
+    description="Verifica un lote de Bronze y reconstruye Silver",
     schedule=None,
     start_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
     catchup=False,
@@ -40,4 +47,12 @@ with DAG(
         task_id="verify_existing_batch",
         python_callable=run_reprocess,
     )
+
+    rebuild_silver_news = PythonOperator(
+        task_id="rebuild_silver_news",
+        python_callable=run_silver,
+        pool="silver_writer",
+    )
+
+    verify_existing_batch >> rebuild_silver_news
 

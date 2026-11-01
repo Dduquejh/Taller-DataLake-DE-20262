@@ -5,6 +5,7 @@ from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 
 from src.pipeline.ingestion import extract
+from src.pipeline.silver import build_silver
 
 
 def run_ingestion(run_id, ingestion_date):
@@ -15,9 +16,17 @@ def run_ingestion(run_id, ingestion_date):
     )
 
 
+def run_silver(run_id, ingestion_date):
+    """Construye Silver con el lote que acaba de escribirse en Bronze."""
+    return build_silver(
+        run_id=run_id,
+        ingestion_date=ingestion_date,
+    )
+
+
 with DAG(
     dag_id="noticias_bronze_ingestion",
-    description="Captura RSS de El Tiempo y almacena originales en Bronze/S3",
+    description="Captura RSS de El Tiempo en Bronze y construye Silver",
     schedule="0 */3 * * *",
     start_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
     catchup=False,
@@ -36,4 +45,17 @@ with DAG(
             "ingestion_date": "{{ dag_run.run_after | ds }}",
         },
     )
+
+    # El pool de un solo cupo evita que dos DAGs reescriban Silver a la vez.
+    build_silver_news = PythonOperator(
+        task_id="build_silver_news",
+        python_callable=run_silver,
+        pool="silver_writer",
+        op_kwargs={
+            "run_id": "{{ run_id }}",
+            "ingestion_date": "{{ dag_run.run_after | ds }}",
+        },
+    )
+
+    extract_bronze >> build_silver_news
 

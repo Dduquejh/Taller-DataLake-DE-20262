@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import json
 import os
+import time
 import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -21,6 +22,10 @@ load_dotenv(ROOT_DIR / ".env")
 SOURCES_FILE = ROOT_DIR / "config" / "sources.yaml"
 BUCKET = os.environ["S3_BUCKET"]
 REGION = os.getenv("AWS_REGION", "us-east-2")
+
+FETCH_ATTEMPTS = 3
+RETRY_BASE_SECONDS = 2
+RETRY_HTTP_STATUS = {429, 500, 502, 503, 504}
 
 s3 = boto3.Session(region_name=REGION).client("s3")
 
@@ -87,12 +92,182 @@ def validate_xml(content):
     return root, news_count
 
 
+def _is_not_found(exc):
+    """Indica si un ClientError de S3 corresponde a un objeto inexistente."""
+    status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    code = exc.response.get("Error", {}).get("Code")
+    return status == 404 or code in ("NoSuchKey", "404", "NotFound")
+
+
+def batch_status(manifest):
+    """
+    Estado del lote según sus fuentes.
+
+    complete: todas las fuentes se capturaron.
+    partial: al menos una se capturó y al menos una falló.
+    failed: ninguna se capturó.
+    """
+    sources = manifest.get("sources", [])
+    success = sum(item.get("status") == "success" for item in sources)
+
+    if sources and success == len(sources):
+        return "complete"
+
+    if success:
+        return "partial"
+
+    return "failed"
+
+
+def fetch_feed(url):
+    """
+    Descarga un feed.
+
+    Reintenta errores de red y respuestas 429/5xx; los demás estados
+    HTTP se devuelven de inmediato porque repetir no los corrige.
+    """
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            response = requests.get(
+                url,
+                timeout=30,
+                headers={"User-Agent": "NoticiasDataLake/1.0"},
+            )
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            if attempt == FETCH_ATTEMPTS:
+                raise
+
+            print(f"REINTENTO | {url} | intento {attempt} | {exc}")
+        else:
+            if (
+                response.status_code not in RETRY_HTTP_STATUS
+                or attempt == FETCH_ATTEMPTS
+            ):
+                return response
+
+            print(
+                f"REINTENTO | {url} | intento {attempt} | "
+                f"HTTP {response.status_code}"
+            )
+
+        time.sleep(RETRY_BASE_SECONDS * 2 ** (attempt - 1))
+
+
+def capture_source(source, run_id, ingestion_date):
+    """Captura una fuente en Bronze y devuelve su registro del manifiesto."""
+    source_id = source["source_id"]
+
+    result = {
+        "source_id": source_id,
+        "medium": source["medium"],
+        "section": source["section"],
+        "url": source["url"],
+        "fetched_at": utc_now().isoformat(),
+        "status": "error",
+    }
+
+    key = (
+        f"bronze/source={source_id}/"
+        f"ingestion_date={ingestion_date}/"
+        f"run_id={run_id}/response.xml"
+    )
+
+    try:
+        # Si el archivo ya existe, conservar y validar el original.
+        # Esto evita sobrescribir una captura durante un reintento.
+        if object_exists(key):
+            original = get_object(key)
+            _, news_count = validate_xml(original)
+            digest = hashlib.sha256(original).hexdigest()
+
+            result.update({
+                "status": "success",
+                "sha256": digest,
+                "s3_key": key,
+                "bytes": len(original),
+                "news_count": news_count,
+                "reused_existing_object": True,
+            })
+
+        else:
+            response = fetch_feed(source["url"])
+
+            result["http_status"] = response.status_code
+            result["content_type"] = response.headers.get("Content-Type")
+            response.raise_for_status()
+
+            # Una respuesta vacía es un error, no una fuente sin noticias.
+            if not response.content.strip():
+                raise ValueError("respuesta vacía")
+
+            _, news_count = validate_xml(response.content)
+            digest = hashlib.sha256(response.content).hexdigest()
+
+            # Creación condicional para impedir sobrescrituras.
+            try:
+                s3.put_object(
+                    Bucket=BUCKET,
+                    Key=key,
+                    Body=response.content,
+                    ContentType="application/xml",
+                    Metadata={
+                        "source-id": source_id,
+                        "run-id": run_id,
+                        "sha256": digest,
+                    },
+                    IfNoneMatch="*",
+                )
+                original = response.content
+
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code")
+                status = exc.response.get(
+                    "ResponseMetadata", {}
+                ).get("HTTPStatusCode")
+
+                # Otro intento pudo crear el objeto simultáneamente.
+                if code not in ("PreconditionFailed", "412") and (
+                    status != 412
+                ):
+                    raise
+
+                original = get_object(key)
+                _, news_count = validate_xml(original)
+                digest = hashlib.sha256(original).hexdigest()
+
+            result.update({
+                "status": "success",
+                "sha256": digest,
+                "s3_key": key,
+                "bytes": len(original),
+                "news_count": news_count,
+                "reused_existing_object": original != response.content,
+            })
+
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        print(f"ERROR | {run_id} | {source_id} | {result['error']}")
+
+    print(
+        f"{result['status'].upper()} | {run_id} | {source_id} | "
+        f"HTTP {result.get('http_status', 'N/A')} | "
+        f"{result.get('news_count', 0)} noticias"
+    )
+
+    return result
+
+
 def extract(run_id=None, ingestion_date=None):
     """
     Captura fuentes RSS y conserva los archivos originales en Bronze.
 
     run_id e ingestion_date pueden proporcionarse desde Airflow.
-    Si ya existe el manifiesto de ese lote, no vuelve a consultar los RSS.
+
+    - Lote complete existente: se devuelve sin consultar los RSS.
+    - Lote partial o failed existente: se reutilizan las capturas
+      guardadas y solo se consultan las fuentes que fallaron.
+    - Resultado failed: lanza una excepción para que Airflow reintente.
+    - Resultado partial: se registra y continúa con las fuentes exitosas.
     """
     started_at = utc_now()
 
@@ -127,20 +302,14 @@ def extract(run_id=None, ingestion_date=None):
         f"run_id={run_id}/manifest.json"
     )
 
-    # Si el lote ya terminó, devolverlo sin volver a consultar los RSS.
+    attempt = 1
+    previous_status = None
+    previous_etag = None
+
     try:
         existing = s3.get_object(Bucket=BUCKET, Key=manifest_key)
     except ClientError as exc:
-        status = exc.response.get("ResponseMetadata", {}).get(
-            "HTTPStatusCode"
-        )
-        code = exc.response.get("Error", {}).get("Code")
-
-        if status != 404 and code not in (
-            "NoSuchKey",
-            "404",
-            "NotFound",
-        ):
+        if not _is_not_found(exc):
             raise
     else:
         manifest = json.loads(existing["Body"].read())
@@ -153,16 +322,20 @@ def extract(run_id=None, ingestion_date=None):
                 "La fecha del manifiesto no coincide con ingestion_date."
             )
 
-        if manifest.get("error_count", 0) > 0:
-            raise RuntimeError(
-                f"El lote {run_id} ya existe, pero está incompleto. "
-                "Usa el DAG de reprocesamiento para verificar "
-                "las capturas exitosas."
-            )
+        # Los manifiestos anteriores a este campo se evalúan por sus fuentes.
+        previous_status = manifest.get("status") or batch_status(manifest)
 
-        print(f"Lote existente: {run_id}")
-        print(f"MANIFEST_KEY={manifest_key}")
-        return run_id
+        if previous_status == "complete":
+            print(f"Lote existente completo: {run_id}")
+            print(f"MANIFEST_KEY={manifest_key}")
+            return run_id
+
+        attempt = manifest.get("attempt", 1) + 1
+        previous_etag = existing["ETag"]
+        print(
+            f"Recuperando lote {run_id} ({previous_status}); "
+            f"intento {attempt}"
+        )
 
     manifest = {
         "run_id": run_id,
@@ -171,116 +344,13 @@ def extract(run_id=None, ingestion_date=None):
         "bucket": BUCKET,
         "region": REGION,
         "operation": "extract",
-        "sources": [],
+        "attempt": attempt,
+        "previous_status": previous_status,
+        "sources": [
+            capture_source(source, run_id, ingestion_date)
+            for source in load_sources()
+        ],
     }
-
-    for source in load_sources():
-        source_id = source["source_id"]
-
-        result = {
-            "source_id": source_id,
-            "medium": source["medium"],
-            "section": source["section"],
-            "url": source["url"],
-            "fetched_at": utc_now().isoformat(),
-            "status": "error",
-        }
-
-        key = (
-            f"bronze/source={source_id}/"
-            f"ingestion_date={ingestion_date}/"
-            f"run_id={run_id}/response.xml"
-        )
-
-        try:
-            # Si el archivo ya existe, conservar y validar el original.
-            # Esto evita sobrescribir una captura durante un reintento.
-            if object_exists(key):
-                original = get_object(key)
-                _, news_count = validate_xml(original)
-                digest = hashlib.sha256(original).hexdigest()
-
-                result.update({
-                    "status": "success",
-                    "sha256": digest,
-                    "s3_key": key,
-                    "bytes": len(original),
-                    "news_count": news_count,
-                    "reused_existing_object": True,
-                })
-
-            else:
-                response = requests.get(
-                    source["url"],
-                    timeout=30,
-                    headers={
-                        "User-Agent": "NoticiasDataLake/1.0"
-                    },
-                )
-
-                result["http_status"] = response.status_code
-                result["content_type"] = response.headers.get(
-                    "Content-Type"
-                )
-                response.raise_for_status()
-
-                _, news_count = validate_xml(response.content)
-                digest = hashlib.sha256(response.content).hexdigest()
-
-                # Creación condicional para impedir sobrescrituras.
-                try:
-                    s3.put_object(
-                        Bucket=BUCKET,
-                        Key=key,
-                        Body=response.content,
-                        ContentType="application/xml",
-                        Metadata={
-                            "source-id": source_id,
-                            "run-id": run_id,
-                            "sha256": digest,
-                        },
-                        IfNoneMatch="*",
-                    )
-                    original = response.content
-
-                except ClientError as exc:
-                    code = exc.response.get("Error", {}).get("Code")
-                    status = exc.response.get(
-                        "ResponseMetadata", {}
-                    ).get("HTTPStatusCode")
-
-                    # Otro intento pudo crear el objeto simultáneamente.
-                    if code not in ("PreconditionFailed", "412") and (
-                        status != 412
-                    ):
-                        raise
-
-                    original = get_object(key)
-                    _, news_count = validate_xml(original)
-                    digest = hashlib.sha256(original).hexdigest()
-
-                result.update({
-                    "status": "success",
-                    "sha256": digest,
-                    "s3_key": key,
-                    "bytes": len(original),
-                    "news_count": news_count,
-                    "reused_existing_object": (
-                        original != response.content
-                    ),
-                })
-
-        except Exception as exc:
-            result["error"] = f"{type(exc).__name__}: {exc}"
-            print(f"ERROR | {source_id} | {result['error']}")
-
-        manifest["sources"].append(result)
-
-        print(
-            f"{result['status'].upper()} | {source_id} | "
-            f"HTTP {result.get('http_status', 'N/A')} | "
-            f"{result.get('news_count', 0)} noticias"
-        )
 
     manifest["finished_at"] = utc_now().isoformat()
     manifest["success_count"] = sum(
@@ -291,8 +361,17 @@ def extract(run_id=None, ingestion_date=None):
         item["status"] == "error"
         for item in manifest["sources"]
     )
+    manifest["status"] = batch_status(manifest)
 
-    # El manifiesto registra el resultado del lote.
+    # Un manifiesto nuevo no puede pisar otro; uno recuperado solo
+    # reemplaza la versión leída. El versionado del bucket conserva
+    # los intentos anteriores.
+    condition = (
+        {"IfMatch": previous_etag}
+        if previous_etag
+        else {"IfNoneMatch": "*"}
+    )
+
     s3.put_object(
         Bucket=BUCKET,
         Key=manifest_key,
@@ -302,28 +381,42 @@ def extract(run_id=None, ingestion_date=None):
             indent=2,
         ).encode("utf-8"),
         ContentType="application/json",
-        IfNoneMatch="*",
+        **condition,
     )
 
     print(f"\nRUN_ID={run_id}")
     print(f"MANIFEST_KEY={manifest_key}")
     print(
-        f"Resultado: {manifest['success_count']} correctas, "
+        f"Resultado: {manifest['status'].upper()} | "
+        f"{manifest['success_count']} correctas, "
         f"{manifest['error_count']} fallidas"
     )
 
-    if manifest["error_count"]:
+    if manifest["status"] == "failed":
         raise RuntimeError(
-            f"Lote {run_id} incompleto. Revisa su manifiesto."
+            f"Lote {run_id} fallido: ninguna fuente se capturó. "
+            "Revisa su manifiesto."
+        )
+
+    if manifest["status"] == "partial":
+        failed = [
+            item["source_id"]
+            for item in manifest["sources"]
+            if item["status"] != "success"
+        ]
+        print(
+            f"PARCIAL | {run_id} | fuentes fallidas: {failed}. "
+            "Reejecuta la tarea para volver a intentarlas."
         )
 
     return run_id
 
 
-def reprocess(run_id):
+def find_manifest_key(run_id, ingestion_date=None):
     """
-    Verifica un lote existente sin consultar fuentes RSS
-    ni escribir objetos en S3.
+    Devuelve la clave del manifiesto de un lote.
+
+    Si no se conoce ingestion_date, busca el run_id en todas las fechas.
     """
     if (
         not isinstance(run_id, str)
@@ -331,6 +424,12 @@ def reprocess(run_id):
         or any(char in run_id for char in ("/", "\\"))
     ):
         raise ValueError("run_id inválido.")
+
+    if ingestion_date:
+        return (
+            f"bronze/manifests/ingestion_date={ingestion_date}/"
+            f"run_id={run_id}/manifest.json"
+        )
 
     paginator = s3.get_paginator("list_objects_v2")
     matches = []
@@ -353,13 +452,22 @@ def reprocess(run_id):
             f"se encontraron {len(matches)}."
         )
 
-    manifest_key = matches[0]
+    return matches[0]
+
+
+def reprocess(run_id):
+    """
+    Verifica un lote existente sin consultar fuentes RSS
+    ni escribir objetos en S3.
+    """
+    manifest_key = find_manifest_key(run_id)
     manifest = json.loads(get_object(manifest_key))
 
     if manifest.get("run_id") != run_id:
         raise ValueError("El run_id del manifiesto no coincide.")
 
-    print(f"Reprocesando lote existente: {run_id}")
+    status = manifest.get("status") or batch_status(manifest)
+    print(f"Reprocesando lote existente: {run_id} ({status})")
     print(f"Manifiesto: s3://{BUCKET}/{manifest_key}")
 
     verified = 0
