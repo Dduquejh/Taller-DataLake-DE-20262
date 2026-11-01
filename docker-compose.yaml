@@ -50,7 +50,7 @@ services:
       - -c
       - >-
         airflow db migrate &&
-        airflow pools set silver_writer 1 "Escrituras serializadas en Silver"
+        airflow pools set silver_writer 1 "Escrituras serializadas en Silver y Gold"
     restart: "no"
 
   airflow-apiserver:

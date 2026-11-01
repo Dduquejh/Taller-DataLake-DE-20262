@@ -5,6 +5,7 @@ from airflow import DAG
 from airflow.exceptions import AirflowException
 from airflow.providers.standard.operators.python import PythonOperator
 
+from src.pipeline.gold import build_gold
 from src.pipeline.ingestion import reprocess
 from src.pipeline.silver import enrich_silver, prepare_silver, publish_silver
 
@@ -43,9 +44,21 @@ def run_publish(**context):
     return publish_silver(run_id=context["dag_run"].conf["run_id"])
 
 
+def run_gold(**context):
+    """
+    Actualiza Gold. Con {"full_gold": true} en la configuración se
+    reconstruyen todas las particiones, no solo las desactualizadas.
+    """
+    conf = context["dag_run"].conf
+    return build_gold(
+        run_id=context["dag_run"].run_id,
+        full=bool(conf.get("full_gold", False)),
+    )
+
+
 with DAG(
     dag_id="noticias_bronze_reprocess",
-    description="Verifica un lote de Bronze y reconstruye Silver",
+    description="Verifica un lote de Bronze y reconstruye Silver y Gold",
     schedule=None,
     start_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
     catchup=False,
@@ -73,10 +86,17 @@ with DAG(
         pool="silver_writer",
     )
 
+    build_gold_tables = PythonOperator(
+        task_id="build_gold_tables",
+        python_callable=run_gold,
+        pool="silver_writer",
+    )
+
     (
         verify_existing_batch
         >> prepare_silver_news
         >> enrich_with_comprehend
         >> publish_silver_news
+        >> build_gold_tables
     )
 

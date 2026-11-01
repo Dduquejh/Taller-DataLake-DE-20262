@@ -1,5 +1,6 @@
 import io
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 
 from botocore.exceptions import ClientError
 
@@ -20,6 +21,7 @@ class FakeS3:
     def __init__(self):
         self.objects = {}
         self.versions = 0
+        self.modified = {}
 
     def _etag(self, key):
         return self.objects[key][1]
@@ -49,6 +51,10 @@ class FakeS3:
 
         self.versions += 1
         self.objects[Key] = (Body, f'"v{self.versions}"')
+        # Cada escritura es un segundo posterior a la anterior.
+        self.modified[Key] = datetime(2026, 1, 1, tzinfo=timezone.utc) + (
+            timedelta(seconds=self.versions)
+        )
         return {"ETag": self._etag(Key)}
 
     def delete_object(self, Bucket, Key):
@@ -60,7 +66,12 @@ class FakeS3:
 
     def paginate(self, Bucket, Prefix):
         keys = sorted(key for key in self.objects if key.startswith(Prefix))
-        yield {"Contents": [{"Key": key} for key in keys]}
+        yield {
+            "Contents": [
+                {"Key": key, "LastModified": self.modified.get(key)}
+                for key in keys
+            ]
+        }
 
 
 # Entidades que el Comprehend simulado reconoce en cualquier texto.

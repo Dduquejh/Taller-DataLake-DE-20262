@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 
+from src.pipeline.gold import build_gold
 from src.pipeline.ingestion import extract
 from src.pipeline.silver import enrich_silver, prepare_silver, publish_silver
 
@@ -18,7 +19,7 @@ def run_ingestion(run_id, ingestion_date):
 
 with DAG(
     dag_id="noticias_bronze_ingestion",
-    description="Captura RSS de El Tiempo en Bronze, enriquece y publica Silver",
+    description="Captura RSS de El Tiempo y actualiza Bronze, Silver y Gold",
     schedule="0 */3 * * *",
     start_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
     catchup=False,
@@ -27,7 +28,7 @@ with DAG(
         "retries": 2,
         "retry_delay": timedelta(minutes=5),
     },
-    tags=["noticias", "bronze", "silver", "comprehend"],
+    tags=["noticias", "bronze", "silver", "gold", "comprehend"],
 ) as dag:
     extract_bronze = PythonOperator(
         task_id="extract_rss_to_bronze",
@@ -53,10 +54,18 @@ with DAG(
         op_kwargs={"run_id": "{{ run_id }}"},
     )
 
-    # El pool de un solo cupo evita que dos DAGs reescriban Silver a la vez.
+    # El pool de un solo cupo evita que dos DAGs reescriban Silver o Gold
+    # a la vez.
     publish_silver_news = PythonOperator(
         task_id="publish_silver_news",
         python_callable=publish_silver,
+        pool="silver_writer",
+        op_kwargs={"run_id": "{{ run_id }}"},
+    )
+
+    build_gold_tables = PythonOperator(
+        task_id="build_gold_tables",
+        python_callable=build_gold,
         pool="silver_writer",
         op_kwargs={"run_id": "{{ run_id }}"},
     )
@@ -66,4 +75,5 @@ with DAG(
         >> prepare_silver_news
         >> enrich_with_comprehend
         >> publish_silver_news
+        >> build_gold_tables
     )

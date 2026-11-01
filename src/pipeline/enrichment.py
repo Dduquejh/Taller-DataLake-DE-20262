@@ -47,7 +47,8 @@ def _chunks(items, size=BATCH_SIZE):
 
 
 def _clean_mention(text):
-    return WHITESPACE.sub(" ", text).strip()
+    # Comprehend a veces incluye la coma o el punto que sigue a la mención.
+    return WHITESPACE.sub(" ", text).strip(" ,.;:")
 
 
 def distinct_mentions(mentions, types=None):
