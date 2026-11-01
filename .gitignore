@@ -16,3 +16,6 @@ terraform.tfvars
 .secrets/
 
 logs/
+
+# Guía local de pendientes
+PENDIENTES.md
