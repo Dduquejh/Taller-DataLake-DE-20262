@@ -90,32 +90,14 @@ variable "docker_buildx_version" {
   default     = "v0.38.1"
 }
 
-# Por defecto no se abre ningún puerto: el UI se usa con port forwarding de
-# Session Manager. Abrir 8080 a una IP concreta es solo una alternativa.
-variable "allowed_cidr" {
-  description = "CIDR que puede entrar al UI de Airflow (8080); null deja el puerto cerrado"
-  type        = string
-  default     = null
-
-  validation {
-    condition     = var.allowed_cidr == null || (can(cidrhost(var.allowed_cidr, 0)) && var.allowed_cidr != "0.0.0.0/0")
-    error_message = "allowed_cidr debe ser un CIDR válido y restringido (p. ej. 203.0.113.10/32), nunca 0.0.0.0/0."
-  }
-}
-
-variable "ssh_allowed_cidr" {
-  description = "CIDR que puede entrar por SSH (22); null deshabilita SSH"
-  type        = string
-  default     = null
-
-  validation {
-    condition     = var.ssh_allowed_cidr == null || (can(cidrhost(var.ssh_allowed_cidr, 0)) && var.ssh_allowed_cidr != "0.0.0.0/0")
-    error_message = "ssh_allowed_cidr debe ser un CIDR válido y restringido (p. ej. 203.0.113.10/32), nunca 0.0.0.0/0."
-  }
-}
-
+# Las reglas de entrada (8080 para el UI, 22 para SSH) no las maneja este
+# stack: se agregan a mano en el security group, restringidas a la IP de
+# quien las necesita, y Terraform no las toca (ver network.tf).
+#
+# key_name solo se usa al crear la instancia: cambiarlo la recrea. Sin par
+# de llaves se puede entrar por Session Manager o por EC2 Instance Connect.
 variable "key_name" {
-  description = "Par de llaves EC2 existente para SSH; solo se usa si ssh_allowed_cidr está definido"
+  description = "Par de llaves EC2 existente para SSH (opcional, solo al crear la instancia)"
   type        = string
   default     = null
 }

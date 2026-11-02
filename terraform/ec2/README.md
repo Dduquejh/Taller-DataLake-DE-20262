@@ -10,7 +10,7 @@ ejecución y apagarse después.
 | Recurso | Detalle |
 |---|---|
 | Rol IAM `noticias-data-lake-airflow-ec2` y su instance profile | Tiene adjuntas las 3 políticas del taller (`-s3`, `-comprehend`, `-athena`), que se leen por nombre desde `terraform/iam`, más `AmazonSSMManagedInstanceCore`. |
-| Security group `noticias-data-lake-airflow` | No tiene reglas de ingreso por defecto. El 8080 y el 22 solo se abren con variables. |
+| Security group `noticias-data-lake-airflow` | Salida libre y SSH solo desde EC2 Instance Connect. El 8080 se puede abrir a mano para una IP (ver [Acceso](#acceso)). |
 | Instancia `noticias-data-lake-airflow` | Amazon Linux 2023 (la AMI sale de SSM), `t3.medium`, disco gp3 de 30 GiB cifrado, IMDSv2 obligatorio con hop limit 2. Usa la VPC y la subred por defecto. |
 
 En el primer arranque, `user_data.sh.tftpl` hace lo siguiente:
@@ -69,9 +69,23 @@ Variables útiles (con `-var` o en un `terraform.tfvars`, que está en
 | `repo_branch` | `main` | Rama que se clona. |
 | `instance_type` | `t3.medium` | No bajar de 4 GiB de RAM. |
 | `root_volume_size` | `30` | GiB del disco gp3. |
-| `allowed_cidr` | `null` | Abre el 8080 a un CIDR concreto, p. ej. `"$(curl -s https://checkip.amazonaws.com)/32"`. No se acepta `0.0.0.0/0`. |
-| `ssh_allowed_cidr` + `key_name` | `null` | SSH opcional. Lo recomendado es usar Session Manager. |
+| `key_name` | `null` | Par de llaves para SSH. Solo se usa al crear la instancia; cambiarlo la recrea. Sin él, usar Instance Connect o Session Manager. |
 | `cpu_credits` | `unlimited` | `standard` evita cualquier cobro extra de CPU, pero estrangula la instancia si se le acaban los créditos. |
+
+## Acceso
+
+- **Terminal desde la consola, sin llaves**: EC2 → Instancias →
+  `noticias-data-lake-airflow` → **Connect** → *EC2 Instance Connect* →
+  usuario `ec2-user`. Terraform abre el 22 solo para la lista de prefijos
+  `com.amazonaws.us-east-2.ec2-instance-connect`, que es el rango del
+  servicio de AWS. No queda abierto a ninguna otra IP, y la llave que sube
+  la consola dura 60 s. La instancia no tiene par de llaves.
+- **UI de Airflow**: túnel de Session Manager (`ssm_port_forward_command`),
+  o una regla manual del 8080 para la IP propia `/32` en el security group.
+  Terraform no administra esa regla, así que un `apply` no la borra. Es HTTP
+  sin cifrar; hay que borrar la regla al terminar la demo.
+- **Session Manager** (`ssm_session_command`) funciona siempre, sin
+  ninguna regla de entrada.
 
 ## Verificación
 
@@ -131,9 +145,11 @@ tocan, porque pertenecen a `terraform/iam` y `terraform/s3`. Si se destruye
 todo, este stack va primero: sus adjuntos dependen de las políticas de
 `terraform/iam`.
 
-> Cambiar `user_data` (variables del repo o versiones de los plugins)
-> **recrea** la instancia, y se pierde la base de Postgres. La AMI se
-> ignora a propósito para que un parche de Amazon Linux no la recree.
+> Los cambios en `user_data` (la plantilla, las variables del repo o las
+> versiones de los plugins) y en la AMI **no** recrean la instancia
+> actual: solo aplican a instancias nuevas. Para aplicarlos a la actual
+> se usa `terraform apply -replace=aws_instance.airflow ...`, y se pierde
+> la base de Postgres (los datos de S3 no).
 
 ## Costo estimado (us-east-2, on-demand)
 

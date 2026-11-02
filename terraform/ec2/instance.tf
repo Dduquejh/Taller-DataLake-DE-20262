@@ -11,12 +11,13 @@ resource "aws_instance" "airflow" {
   associate_public_ip_address = true
   iam_instance_profile        = aws_iam_instance_profile.airflow.name
 
-  key_name = var.ssh_allowed_cidr == null ? null : var.key_name
+  key_name = var.key_name
 
-  # cloud-init ejecuta user_data solo en el primer arranque; si cambia, la
-  # instancia se recrea para que el cambio se aplique de verdad en vez de
-  # quedar guardado sin efecto.
-  user_data_replace_on_change = true
+  # cloud-init ejecuta user_data solo en el primer arranque. Un cambio en la
+  # plantilla se aplica a las instancias nuevas, pero no recrea la actual
+  # (ver ignore_changes): así un ajuste del script no borra Postgres en
+  # medio de la demo. Para aplicarlo a la instancia actual:
+  #   terraform apply -replace=aws_instance.airflow ...
   user_data = templatefile("${path.module}/user_data.sh.tftpl", {
     app_dir                = local.app_dir
     repo_url               = var.repo_url
@@ -61,11 +62,7 @@ resource "aws_instance" "airflow" {
   lifecycle {
     # El parámetro de SSM apunta a una AMI nueva con cada parche; sin esto,
     # cualquier apply posterior recrearía la instancia y borraría Postgres.
-    ignore_changes = [ami]
-
-    precondition {
-      condition     = var.ssh_allowed_cidr == null || var.key_name != null
-      error_message = "Para habilitar SSH (ssh_allowed_cidr) también hay que indicar key_name."
-    }
+    # user_data: ver el comentario de arriba.
+    ignore_changes = [ami, user_data]
   }
 }

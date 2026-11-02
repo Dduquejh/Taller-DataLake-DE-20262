@@ -34,7 +34,7 @@ output "ssm_port_forward_command" {
 
 output "airflow_url" {
   description = "URL del UI de Airflow"
-  value       = var.allowed_cidr == null ? "http://localhost:8080 (con el túnel de ssm_port_forward_command)" : "http://${aws_instance.airflow.public_ip}:8080"
+  value       = "http://${aws_instance.airflow.public_ip}:8080 (con la regla manual del 8080) o http://localhost:8080 (con ssm_port_forward_command)"
 }
 
 # Se ejecuta dentro de la sesión SSM. El usuario es admin; la contraseña
@@ -42,6 +42,11 @@ output "airflow_url" {
 output "airflow_password_command" {
   description = "Muestra la contraseña del usuario admin de Airflow (dentro de la sesión SSM)"
   value       = "cd ${local.app_dir} && sudo docker compose exec airflow-apiserver cat /opt/airflow/simple_auth_manager_passwords.json.generated"
+}
+
+output "instance_connect_console" {
+  description = "Terminal en la consola sin llaves"
+  value       = "EC2 > Instancias > ${aws_instance.airflow.id} > Connect > EC2 Instance Connect (usuario ec2-user)"
 }
 
 output "bootstrap_log_command" {

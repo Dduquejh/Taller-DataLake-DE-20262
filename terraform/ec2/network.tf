@@ -1,5 +1,9 @@
-# Sin reglas de ingreso por defecto: Session Manager funciona con conexiones
-# salientes del agente SSM, así que el UI se alcanza sin abrir puertos.
+# Terraform administra la salida y el SSH desde EC2 Instance Connect (abajo).
+# Otras reglas de entrada, como el 8080 para una IP /32, se pueden agregar a
+# mano: este recurso no declara bloques ingress en línea, así que un apply
+# no las borra.
+# Sin reglas de entrada, el UI sigue disponible con el túnel de Session
+# Manager, que usa la conexión saliente del agente SSM.
 resource "aws_security_group" "airflow" {
   name        = "${var.project_name}-airflow"
   description = "Airflow en EC2: sin ingreso por defecto, salida libre"
@@ -17,24 +21,19 @@ resource "aws_vpc_security_group_egress_rule" "all" {
   cidr_ipv4         = "0.0.0.0/0"
 }
 
-resource "aws_vpc_security_group_ingress_rule" "airflow_ui" {
-  count = var.allowed_cidr == null ? 0 : 1
-
-  security_group_id = aws_security_group.airflow.id
-  description       = "UI de Airflow desde una IP autorizada"
-  ip_protocol       = "tcp"
-  from_port         = 8080
-  to_port           = 8080
-  cidr_ipv4         = var.allowed_cidr
+# SSH solo desde el servicio EC2 Instance Connect de AWS, para el botón
+# "Connect" de la consola: sube una llave temporal (60 s), así que la
+# instancia no necesita par de llaves. El origen es la lista de prefijos que
+# AWS mantiene para la región, no una IP ni 0.0.0.0/0.
+data "aws_ec2_managed_prefix_list" "instance_connect" {
+  name = "com.amazonaws.${var.aws_region}.ec2-instance-connect"
 }
 
-resource "aws_vpc_security_group_ingress_rule" "ssh" {
-  count = var.ssh_allowed_cidr == null ? 0 : 1
-
+resource "aws_vpc_security_group_ingress_rule" "instance_connect" {
   security_group_id = aws_security_group.airflow.id
-  description       = "SSH desde una IP autorizada"
+  description       = "SSH desde EC2 Instance Connect (consola)"
   ip_protocol       = "tcp"
   from_port         = 22
   to_port           = 22
-  cidr_ipv4         = var.ssh_allowed_cidr
+  prefix_list_id    = data.aws_ec2_managed_prefix_list.instance_connect.id
 }
