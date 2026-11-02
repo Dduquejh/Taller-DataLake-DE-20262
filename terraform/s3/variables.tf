@@ -16,3 +16,9 @@ variable "environment" {
   default     = "dev"
 }
 
+
+variable "athena_results_retention_days" {
+  description = "Días que se conservan los resultados de Athena antes de borrarlos"
+  type        = number
+  default     = 7
+}

@@ -19,3 +19,4 @@ logs/
 
 # Guía local de pendientes
 PENDIENTES.md
+.~lock.*#

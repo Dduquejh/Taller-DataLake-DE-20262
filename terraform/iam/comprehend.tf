@@ -37,7 +37,7 @@ resource "aws_iam_policy" "comprehend" {
   tags = local.common_tags
 }
 
-resource "aws_iam_user_policy_attachment" "pipeline_comprehend" {
-  user       = var.pipeline_user_name
+resource "aws_iam_group_policy_attachment" "pipeline_comprehend" {
+  group      = aws_iam_group.pipeline.name
   policy_arn = aws_iam_policy.comprehend.arn
 }

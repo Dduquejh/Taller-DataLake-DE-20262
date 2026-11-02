@@ -51,3 +51,34 @@ resource "aws_s3_bucket_ownership_controls" "data_lake" {
   }
 }
 
+
+# Los resultados de Athena (athena-results/, ver terraform/catalog) son
+# temporales: se borran a los pocos días. Con el versionado activo, la
+# expiración solo deja un marcador de borrado, así que también se eliminan
+# las versiones anteriores. Las zonas del data lake no tienen reglas.
+resource "aws_s3_bucket_lifecycle_configuration" "data_lake" {
+  bucket = aws_s3_bucket.data_lake.id
+
+  rule {
+    id     = "expire-athena-results"
+    status = "Enabled"
+
+    filter {
+      prefix = "athena-results/"
+    }
+
+    expiration {
+      days = var.athena_results_retention_days
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 1
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
+    }
+  }
+
+  depends_on = [aws_s3_bucket_versioning.data_lake]
+}

@@ -60,7 +60,7 @@ resource "aws_iam_policy" "s3" {
   tags = local.common_tags
 }
 
-resource "aws_iam_user_policy_attachment" "pipeline_s3" {
-  user       = var.pipeline_user_name
+resource "aws_iam_group_policy_attachment" "pipeline_s3" {
+  group      = aws_iam_group.pipeline.name
   policy_arn = aws_iam_policy.s3.arn
 }
