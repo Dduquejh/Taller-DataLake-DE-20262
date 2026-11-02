@@ -5,10 +5,12 @@ Cada escenario escribe un lote nuevo (XML + manifiesto) a partir de las
 últimas capturas reales de Bronze, con un cambio controlado, y se procesa
 con el DAG de reproceso: el mismo código del pipeline, sin consultar los RSS.
 
-Uso (desde la raíz del repositorio):
-    .venv/bin/python scripts/scenarios.py defectuosos [--trigger]
-    .venv/bin/python scripts/scenarios.py modificada  [--trigger]
-    .venv/bin/python scripts/scenarios.py parcial     [--trigger]
+Uso, dentro del contenedor de Airflow (en EC2 o en local):
+    docker compose exec airflow-apiserver python scripts/scenarios.py defectuosos --trigger
+    docker compose exec airflow-apiserver python scripts/scenarios.py modificada --trigger
+    docker compose exec airflow-apiserver python scripts/scenarios.py parcial --trigger
+
+También funciona desde el host con el entorno local (.venv/bin/python ...).
 
 Escenarios:
     defectuosos  Un feed real más items inválidos (sin título, sin enlace,
@@ -35,6 +37,7 @@ import argparse
 import copy
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -288,11 +291,16 @@ def build_scenario(name):
 
 
 def trigger_command(run_id):
-    return [
-        "docker", "compose", "exec", "-T", "airflow-apiserver",
+    """Dentro del contenedor usa la CLI de Airflow; desde el host, compose."""
+    command = [
         "airflow", "dags", "trigger", "noticias_bronze_reprocess",
         "--conf", json.dumps({"run_id": run_id}),
     ]
+
+    if shutil.which("airflow"):
+        return command
+
+    return ["docker", "compose", "exec", "-T", "airflow-apiserver", *command]
 
 
 def main():
