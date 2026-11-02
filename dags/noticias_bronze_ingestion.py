@@ -3,7 +3,13 @@ from datetime import datetime, timedelta, timezone
 
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
+from airflow.utils.trigger_rule import TriggerRule
 
+from src.pipeline.dag_tasks import (
+    run_preflight,
+    run_record_status,
+    run_validations,
+)
 from src.pipeline.gold import build_gold
 from src.pipeline.ingestion import extract
 from src.pipeline.silver import enrich_silver, prepare_silver, publish_silver
@@ -30,6 +36,14 @@ with DAG(
     },
     tags=["noticias", "bronze", "silver", "gold", "comprehend"],
 ) as dag:
+    # Sin reintentos: un error de configuración o de permisos no se corrige
+    # solo, y es mejor saberlo antes de consultar los RSS.
+    preflight = PythonOperator(
+        task_id="preflight_checks",
+        python_callable=run_preflight,
+        retries=0,
+    )
+
     extract_bronze = PythonOperator(
         task_id="extract_rss_to_bronze",
         python_callable=run_ingestion,
@@ -70,10 +84,33 @@ with DAG(
         op_kwargs={"run_id": "{{ run_id }}"},
     )
 
+    validate_athena = PythonOperator(
+        task_id="validate_with_athena",
+        python_callable=run_validations,
+        op_kwargs={"batch_run_id": "{{ run_id }}"},
+    )
+
+    # all_done: corre aunque una tarea anterior falle, para dejar registro
+    # del estado. Falla si el lote no quedó completo, así que un lote
+    # parcial deja la corrida en rojo.
+    record_status = PythonOperator(
+        task_id="record_run_status",
+        python_callable=run_record_status,
+        trigger_rule=TriggerRule.ALL_DONE,
+        retries=0,
+        op_kwargs={
+            "batch_run_id": "{{ run_id }}",
+            "ingestion_date": "{{ dag_run.run_after | ds }}",
+        },
+    )
+
     (
-        extract_bronze
+        preflight
+        >> extract_bronze
         >> prepare_silver_news
         >> enrich_with_comprehend
         >> publish_silver_news
         >> build_gold_tables
+        >> validate_athena
+        >> record_status
     )

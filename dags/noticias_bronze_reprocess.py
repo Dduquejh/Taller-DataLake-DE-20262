@@ -4,7 +4,13 @@ from datetime import datetime, timezone
 from airflow import DAG
 from airflow.exceptions import AirflowException
 from airflow.providers.standard.operators.python import PythonOperator
+from airflow.utils.trigger_rule import TriggerRule
 
+from src.pipeline.dag_tasks import (
+    run_preflight,
+    run_record_status,
+    run_validations,
+)
 from src.pipeline.gold import build_gold
 from src.pipeline.ingestion import reprocess
 from src.pipeline.silver import enrich_silver, prepare_silver, publish_silver
@@ -65,6 +71,12 @@ with DAG(
     max_active_runs=1,
     tags=["noticias", "bronze", "reprocess"],
 ) as dag:
+    preflight = PythonOperator(
+        task_id="preflight_checks",
+        python_callable=run_preflight,
+        retries=0,
+    )
+
     verify_existing_batch = PythonOperator(
         task_id="verify_existing_batch",
         python_callable=run_reprocess,
@@ -92,11 +104,30 @@ with DAG(
         pool="silver_writer",
     )
 
+    validate_athena = PythonOperator(
+        task_id="validate_with_athena",
+        python_callable=run_validations,
+        op_kwargs={"batch_run_id": "{{ dag_run.conf.get('run_id', '') }}"},
+    )
+
+    # Ver noticias_bronze_ingestion: registra el estado aunque algo falle.
+    # Sin ingestion_date, el manifiesto se busca por run_id.
+    record_status = PythonOperator(
+        task_id="record_run_status",
+        python_callable=run_record_status,
+        trigger_rule=TriggerRule.ALL_DONE,
+        retries=0,
+        op_kwargs={"batch_run_id": "{{ dag_run.conf.get('run_id', '') }}"},
+    )
+
     (
-        verify_existing_batch
+        preflight
+        >> verify_existing_batch
         >> prepare_silver_news
         >> enrich_with_comprehend
         >> publish_silver_news
         >> build_gold_tables
+        >> validate_athena
+        >> record_status
     )
 

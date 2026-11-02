@@ -21,6 +21,7 @@ x-airflow-common: &airflow-common
     - ./plugins:/opt/airflow/plugins
     - ./src:/opt/airflow/src
     - ./config:/opt/airflow/config
+    - ./sql:/opt/airflow/sql
     - ./.secrets/aws:/home/airflow/.aws:ro
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
