@@ -67,7 +67,11 @@ AWSCONFIG
 chmod 755 .secrets .secrets/aws
 chmod 644 .secrets/aws/config
 
-AIRFLOW_UID=$(id -u ec2-user)
+# 50000 es el usuario airflow de la imagen oficial, igual que en local. Con
+# otro uid (p. ej. el de ec2-user) Python no encuentra los paquetes
+# instalados en /home/airflow/.local y airflow-init falla con
+# "No module named 'airflow'".
+AIRFLOW_UID=50000
 API_SECRET_KEY=$(openssl rand -hex 32)
 JWT_SECRET=$(openssl rand -hex 32)
 
@@ -86,6 +90,8 @@ DOTENV
 chmod 600 .env
 
 chown -R ec2-user:ec2-user "$APP_DIR"
+# Los montajes en los que Airflow escribe son del usuario del contenedor.
+chown -R "$AIRFLOW_UID":0 logs plugins
 
 echo "== Levantando Airflow"
 docker compose up -d --build
