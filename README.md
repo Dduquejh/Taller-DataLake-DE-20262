@@ -170,15 +170,15 @@ El mismo `docker compose` corre en una instancia EC2. El detalle está en
    git push -u origin silver-layer
    cd terraform/ec2
    terraform init
-   terraform apply -var aws_profile=admin -var repo_branch=silver-layer
+   terraform apply -var aws_profile=admin -var repo_branch=silver-layer \
+     -var "allowed_cidrs=[\"$(curl -s https://checkip.amazonaws.com)/32\"]"
    ```
-   `user_data` instala Docker, clona el repo en `/opt/noticias-data-lake` y
+   `allowed_cidrs` abre el 8080 solo para la IP propia; el panel va por HTTP
+   sin cifrar, por eso no se acepta `0.0.0.0/0`. Si la IP cambia, se repite
+   el `apply` con la nueva. `user_data` instala Docker, clona el repo en `/opt/noticias-data-lake` y
    levanta Airflow. Tarda unos 5 minutos. El avance se ve en
    `/var/log/cloud-init-output.log`.
-4. Abrir el 8080 **solo para la IP propia** (`<tu IP>/32`) en el security
-   group `noticias-data-lake-airflow`. Esa regla se agrega a mano y Terraform
-   no la toca.
-5. Obtener la contraseña del usuario `admin` (desde `terraform/ec2`):
+4. Obtener la contraseña del usuario `admin` (desde `terraform/ec2`):
    ```bash
    ID=$(terraform output -raw instance_id)
    CMD=$(aws ssm send-command --profile admin --region us-east-2 --instance-ids "$ID" \
@@ -189,9 +189,9 @@ El mismo `docker compose` corre en una instancia EC2. El detalle está en
    aws ssm get-command-invocation --profile admin --region us-east-2 --command-id "$CMD" --instance-id "$ID" \
      --query StandardOutputContent --output text
    ```
-6. Entrar a `http://<IP pública>:8080` (`terraform output -raw public_ip`)
+5. Entrar a `http://<IP pública>:8080` (`terraform output -raw public_ip`)
    con `admin` y esa contraseña.
-7. Para una terminal en la instancia, sin llaves: EC2 → Instancias →
+6. Para una terminal en la instancia, sin llaves: EC2 → Instancias →
    `noticias-data-lake-airflow` → **Connect** → *EC2 Instance Connect*. El
    puerto 22 está abierto solo para el servicio de Instance Connect.
 
@@ -293,25 +293,36 @@ Las pruebas usan objetos falsos y no se conectan a AWS.
 
 ## 8. Eliminar los recursos
 
-En este orden. Los stacks de EC2 e IAM dependen de las políticas, y el bucket
-va al final:
+En este orden: EC2 e IAM dependen de las políticas, y el bucket va al final.
+**Vaciar el bucket borra todos los datos**, incluido Bronze, y no se puede
+deshacer.
 
 ```bash
+aws login --profile admin
 eval "$(aws configure export-credentials --profile admin --format env)"
 
-# 1. Instancia, catálogo y políticas (el security group se borra con sus reglas)
-terraform -chdir=terraform/ec2     destroy -var aws_profile=admin -var repo_branch=silver-layer
+# 1. Instancia, rol y security group (se borra con sus reglas)
+terraform -chdir=terraform/ec2     destroy -var aws_profile=admin
+
+# 2. Tablas de Glue y workgroup de Athena
 terraform -chdir=terraform/catalog destroy -var aws_profile=admin
+
+# 3. Políticas y grupo IAM
 terraform -chdir=terraform/iam     destroy -var aws_profile=admin
 
-# 2. El bucket tiene versionado y Terraform no lo borra si tiene contenido:
-#    primero hay que vaciarlo, con todas sus versiones (consola: S3 → bucket
-#    → Empty). Este paso borra todos los datos.
+# 4. Vaciar el bucket con todas sus versiones y marcadores de borrado
+#    (Terraform no borra un bucket con contenido)
+BUCKET=$(terraform -chdir=terraform/s3 output -raw bucket_name)
+.venv/bin/python -c "import boto3, sys; boto3.Session(profile_name='admin').resource('s3').Bucket(sys.argv[1]).object_versions.delete()" "$BUCKET"
+
+# 5. El bucket
 terraform -chdir=terraform/s3      destroy
 
-# 3. Airflow local, si se usó (-v borra también su base de datos)
+# 6. Airflow local, si se usó (-v borra también su base de datos)
 docker compose down -v
 ```
+
+Cada `destroy` muestra el plan y pide confirmación.
 
 ## 9. Estimación de costos
 

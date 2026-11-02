@@ -90,10 +90,24 @@ variable "docker_buildx_version" {
   default     = "v0.38.1"
 }
 
-# Las reglas de entrada (8080 para el UI, 22 para SSH) no las maneja este
-# stack: se agregan a mano en el security group, restringidas a la IP de
-# quien las necesita, y Terraform no las toca (ver network.tf).
-#
+# IPs que pueden entrar al UI de Airflow por http://<IP pública>:8080. El
+# UI va por HTTP sin cifrar, así que se abre solo a IPs concretas (/32) y
+# nunca a todo internet. Vacía, el UI queda disponible solo con el túnel
+# de Session Manager.
+variable "allowed_cidrs" {
+  description = "CIDRs que pueden entrar al UI de Airflow (8080), p. ej. [\"203.0.113.10/32\"]"
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for cidr in var.allowed_cidrs :
+      can(cidrhost(cidr, 0)) && !endswith(cidr, "/0")
+    ])
+    error_message = "allowed_cidrs solo acepta CIDRs válidos y restringidos (p. ej. 203.0.113.10/32), nunca 0.0.0.0/0."
+  }
+}
+
 # key_name solo se usa al crear la instancia: cambiarlo la recrea. Sin par
 # de llaves se puede entrar por Session Manager o por EC2 Instance Connect.
 variable "key_name" {

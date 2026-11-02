@@ -34,7 +34,7 @@ output "ssm_port_forward_command" {
 
 output "airflow_url" {
   description = "URL del UI de Airflow"
-  value       = "http://${aws_instance.airflow.public_ip}:8080 (con la regla manual del 8080) o http://localhost:8080 (con ssm_port_forward_command)"
+  value       = length(var.allowed_cidrs) > 0 ? "http://${aws_instance.airflow.public_ip}:8080" : "http://localhost:8080 (con el túnel de ssm_port_forward_command)"
 }
 
 # Se ejecuta dentro de la sesión SSM. El usuario es admin; la contraseña

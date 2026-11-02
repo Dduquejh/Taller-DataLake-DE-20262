@@ -1,7 +1,6 @@
-# Terraform administra la salida y el SSH desde EC2 Instance Connect (abajo).
-# Otras reglas de entrada, como el 8080 para una IP /32, se pueden agregar a
-# mano: este recurso no declara bloques ingress en línea, así que un apply
-# no las borra.
+# Reglas: salida libre, el UI (8080) solo para var.allowed_cidrs y SSH solo
+# desde EC2 Instance Connect. Este recurso no declara bloques ingress en
+# línea, así que una regla agregada a mano no se borra en un apply.
 # Sin reglas de entrada, el UI sigue disponible con el túnel de Session
 # Manager, que usa la conexión saliente del agente SSM.
 resource "aws_security_group" "airflow" {
@@ -36,4 +35,15 @@ resource "aws_vpc_security_group_ingress_rule" "instance_connect" {
   from_port         = 22
   to_port           = 22
   prefix_list_id    = data.aws_ec2_managed_prefix_list.instance_connect.id
+}
+
+resource "aws_vpc_security_group_ingress_rule" "airflow_ui" {
+  for_each = toset(var.allowed_cidrs)
+
+  security_group_id = aws_security_group.airflow.id
+  description       = "UI de Airflow desde una IP autorizada"
+  ip_protocol       = "tcp"
+  from_port         = 8080
+  to_port           = 8080
+  cidr_ipv4         = each.value
 }

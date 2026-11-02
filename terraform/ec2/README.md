@@ -10,7 +10,7 @@ ejecución y apagarse después.
 | Recurso | Detalle |
 |---|---|
 | Rol IAM `noticias-data-lake-airflow-ec2` y su instance profile | Tiene adjuntas las 3 políticas del taller (`-s3`, `-comprehend`, `-athena`), que se leen por nombre desde `terraform/iam`, más `AmazonSSMManagedInstanceCore`. |
-| Security group `noticias-data-lake-airflow` | Salida libre y SSH solo desde EC2 Instance Connect. El 8080 se puede abrir a mano para una IP (ver [Acceso](#acceso)). |
+| Security group `noticias-data-lake-airflow` | Salida libre, el 8080 solo para las IPs de `allowed_cidrs` y el SSH solo desde EC2 Instance Connect (ver [Acceso](#acceso)). |
 | Instancia `noticias-data-lake-airflow` | Amazon Linux 2023 (la AMI sale de SSM), `t3.medium`, disco gp3 de 30 GiB cifrado, IMDSv2 obligatorio con hop limit 2. Usa la VPC y la subred por defecto. |
 
 En el primer arranque, `user_data.sh.tftpl` hace lo siguiente:
@@ -69,6 +69,7 @@ Variables útiles (con `-var` o en un `terraform.tfvars`, que está en
 | `repo_branch` | `main` | Rama que se clona. |
 | `instance_type` | `t3.medium` | No bajar de 4 GiB de RAM. |
 | `root_volume_size` | `30` | GiB del disco gp3. |
+| `allowed_cidrs` | `[]` | IPs que pueden entrar al UI por `http://<IP pública>:8080`, p. ej. `'["181.58.39.251/32"]'`. No acepta `/0`. Vacía, solo el túnel de SSM |
 | `key_name` | `null` | Par de llaves para SSH. Solo se usa al crear la instancia; cambiarlo la recrea. Sin él, usar Instance Connect o Session Manager. |
 | `cpu_credits` | `unlimited` | `standard` evita cualquier cobro extra de CPU, pero estrangula la instancia si se le acaban los créditos. |
 
@@ -80,19 +81,22 @@ Variables útiles (con `-var` o en un `terraform.tfvars`, que está en
   `com.amazonaws.us-east-2.ec2-instance-connect`, que es el rango del
   servicio de AWS. No queda abierto a ninguna otra IP, y la llave que sube
   la consola dura 60 s. La instancia no tiene par de llaves.
-- **UI de Airflow**: túnel de Session Manager (`ssm_port_forward_command`),
-  o una regla manual del 8080 para la IP propia `/32` en el security group.
-  Terraform no administra esa regla, así que un `apply` no la borra. Es HTTP
-  sin cifrar; hay que borrar la regla al terminar la demo.
+- **UI de Airflow**: `http://<IP pública>:8080` para las IPs de
+  `allowed_cidrs`, o el túnel de Session Manager (`ssm_port_forward_command`)
+  sin abrir puertos. Es HTTP sin cifrar, por eso solo se abre a IPs `/32`.
+  Si cambia la IP propia, se vuelve a aplicar con la nueva.
 - **Session Manager** (`ssm_session_command`) funciona siempre, sin
   ninguna regla de entrada.
 
 ## Entrar al panel de Airflow
 
-1. **Abrir el acceso al 8080**: en el security group
-   `noticias-data-lake-airflow`, agregar a mano la regla *Custom TCP 8080*
-   con origen `<tu IP>/32` (`curl https://checkip.amazonaws.com`). Como
-   alternativa sin abrir puertos, usar el túnel:
+1. **Abrir el acceso al 8080** para la IP propia, al crear la instancia o
+   después:
+   ```bash
+   terraform apply -var aws_profile=admin -var repo_branch=silver-layer \
+     -var "allowed_cidrs=[\"$(curl -s https://checkip.amazonaws.com)/32\"]"
+   ```
+   Como alternativa sin abrir puertos, usar el túnel:
    `eval "$(terraform output -raw ssm_port_forward_command)"`.
 2. **Obtener la contraseña** del usuario `admin`. Se genera al crear el
    contenedor del api-server, así que cambia si se recrea. Desde
@@ -120,7 +124,6 @@ Variables útiles (con `-var` o en un `terraform.tfvars`, que está en
 3. **Entrar** a `http://<IP pública>:8080` (`terraform output -raw public_ip`),
    o a `http://localhost:8080` con el túnel, con el usuario `admin` y esa
    contraseña.
-4. Al terminar la demo, **borrar la regla del 8080**.
 
 ## Verificación
 
