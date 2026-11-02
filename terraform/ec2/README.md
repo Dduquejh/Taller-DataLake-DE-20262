@@ -87,6 +87,41 @@ Variables útiles (con `-var` o en un `terraform.tfvars`, que está en
 - **Session Manager** (`ssm_session_command`) funciona siempre, sin
   ninguna regla de entrada.
 
+## Entrar al panel de Airflow
+
+1. **Abrir el acceso al 8080**: en el security group
+   `noticias-data-lake-airflow`, agregar a mano la regla *Custom TCP 8080*
+   con origen `<tu IP>/32` (`curl https://checkip.amazonaws.com`). Como
+   alternativa sin abrir puertos, usar el túnel:
+   `eval "$(terraform output -raw ssm_port_forward_command)"`.
+2. **Obtener la contraseña** del usuario `admin`. Se genera al crear el
+   contenedor del api-server, así que cambia si se recrea. Desde
+   `terraform/ec2` en la máquina local:
+
+   ```bash
+   ID=$(terraform output -raw instance_id)
+   CMD=$(aws ssm send-command --profile admin --region us-east-2 --instance-ids "$ID" \
+     --document-name AWS-RunShellScript \
+     --parameters 'commands=["cd /opt/noticias-data-lake && docker compose exec -T airflow-apiserver cat /opt/airflow/simple_auth_manager_passwords.json.generated"]' \
+     --query Command.CommandId --output text)
+   aws ssm wait command-executed --profile admin --region us-east-2 --command-id "$CMD" --instance-id "$ID"
+   aws ssm get-command-invocation --profile admin --region us-east-2 --command-id "$CMD" --instance-id "$ID" \
+     --query StandardOutputContent --output text
+   # -> {"admin": "<contraseña>"}
+   ```
+
+   O desde la terminal de la consola (EC2 Instance Connect o Session
+   Manager):
+
+   ```bash
+   cd /opt/noticias-data-lake && sudo docker compose exec airflow-apiserver \
+     cat /opt/airflow/simple_auth_manager_passwords.json.generated
+   ```
+3. **Entrar** a `http://<IP pública>:8080` (`terraform output -raw public_ip`),
+   o a `http://localhost:8080` con el túnel, con el usuario `admin` y esa
+   contraseña.
+4. Al terminar la demo, **borrar la regla del 8080**.
+
 ## Verificación
 
 Los comandos salen de `terraform output` y se ejecutan desde `terraform/ec2`. `eval` respeta las comillas del JSON de `--parameters`.
