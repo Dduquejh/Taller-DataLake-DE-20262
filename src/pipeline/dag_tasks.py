@@ -5,9 +5,43 @@ Convierten los errores definitivos en AirflowFailException: reintentar una
 validación que falló o un lote que quedó parcial no cambia el resultado.
 """
 
-from airflow.exceptions import AirflowFailException
+import functools
+
+from airflow.exceptions import AirflowException, AirflowFailException
+from airflow.sdk import Variable
 
 from src.pipeline import checks
+
+# Fallo controlado para el escenario de evidencia "fallo y reejecución".
+# Mientras la Variable tenga el task_id de una tarea, esa tarea falla al
+# empezar, antes de leer o escribir nada:
+#   airflow variables set noticias_fail_task publish_silver_news
+#   airflow variables delete noticias_fail_task
+# El error es reintentable: si se borra la Variable antes del siguiente
+# reintento (retry_delay = 5 min), Airflow se recupera solo; si se agotan
+# los reintentos, se recupera con Clear sobre la tarea y sus posteriores.
+FAIL_TASK_VARIABLE = "noticias_fail_task"
+
+
+class ControlledFailure(AirflowException):
+    """Fallo provocado a propósito con la Variable noticias_fail_task."""
+
+
+def failpoint(task_id, function):
+    """Envuelve el callable de una tarea con el fallo controlado."""
+
+    # functools.wraps conserva la firma, y Airflow pasa el contexto según
+    # los parámetros de la función original.
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        if Variable.get(FAIL_TASK_VARIABLE, default=None) == task_id:
+            raise ControlledFailure(
+                f"Fallo controlado en {task_id} "
+                f"(Variable {FAIL_TASK_VARIABLE}). Bórrala para recuperar."
+            )
+        return function(*args, **kwargs)
+
+    return wrapper
 
 # Etapas cuyo resultado se registra en el estado final, en orden.
 STAGES = [

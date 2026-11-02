@@ -6,6 +6,7 @@ from airflow.providers.standard.operators.python import PythonOperator
 from airflow.utils.trigger_rule import TriggerRule
 
 from src.pipeline.dag_tasks import (
+    failpoint,
     run_preflight,
     run_record_status,
     run_validations,
@@ -46,7 +47,7 @@ with DAG(
 
     extract_bronze = PythonOperator(
         task_id="extract_rss_to_bronze",
-        python_callable=run_ingestion,
+        python_callable=failpoint("extract_rss_to_bronze", run_ingestion),
         op_kwargs={
             "run_id": "{{ run_id }}",
             "ingestion_date": "{{ dag_run.run_after | ds }}",
@@ -55,7 +56,7 @@ with DAG(
 
     prepare_silver_news = PythonOperator(
         task_id="prepare_silver_news",
-        python_callable=prepare_silver,
+        python_callable=failpoint("prepare_silver_news", prepare_silver),
         op_kwargs={
             "run_id": "{{ run_id }}",
             "ingestion_date": "{{ dag_run.run_after | ds }}",
@@ -64,7 +65,7 @@ with DAG(
 
     enrich_with_comprehend = PythonOperator(
         task_id="enrich_with_comprehend",
-        python_callable=enrich_silver,
+        python_callable=failpoint("enrich_with_comprehend", enrich_silver),
         op_kwargs={"run_id": "{{ run_id }}"},
     )
 
@@ -72,21 +73,21 @@ with DAG(
     # a la vez.
     publish_silver_news = PythonOperator(
         task_id="publish_silver_news",
-        python_callable=publish_silver,
+        python_callable=failpoint("publish_silver_news", publish_silver),
         pool="silver_writer",
         op_kwargs={"run_id": "{{ run_id }}"},
     )
 
     build_gold_tables = PythonOperator(
         task_id="build_gold_tables",
-        python_callable=build_gold,
+        python_callable=failpoint("build_gold_tables", build_gold),
         pool="silver_writer",
         op_kwargs={"run_id": "{{ run_id }}"},
     )
 
     validate_athena = PythonOperator(
         task_id="validate_with_athena",
-        python_callable=run_validations,
+        python_callable=failpoint("validate_with_athena", run_validations),
         op_kwargs={"batch_run_id": "{{ run_id }}"},
     )
 

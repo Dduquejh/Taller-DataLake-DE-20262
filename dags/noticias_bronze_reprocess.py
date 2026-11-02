@@ -7,6 +7,7 @@ from airflow.providers.standard.operators.python import PythonOperator
 from airflow.utils.trigger_rule import TriggerRule
 
 from src.pipeline.dag_tasks import (
+    failpoint,
     run_preflight,
     run_record_status,
     run_validations,
@@ -79,34 +80,34 @@ with DAG(
 
     verify_existing_batch = PythonOperator(
         task_id="verify_existing_batch",
-        python_callable=run_reprocess,
+        python_callable=failpoint("verify_existing_batch", run_reprocess),
     )
 
     prepare_silver_news = PythonOperator(
         task_id="prepare_silver_news",
-        python_callable=run_prepare,
+        python_callable=failpoint("prepare_silver_news", run_prepare),
     )
 
     enrich_with_comprehend = PythonOperator(
         task_id="enrich_with_comprehend",
-        python_callable=run_enrich,
+        python_callable=failpoint("enrich_with_comprehend", run_enrich),
     )
 
     publish_silver_news = PythonOperator(
         task_id="publish_silver_news",
-        python_callable=run_publish,
+        python_callable=failpoint("publish_silver_news", run_publish),
         pool="silver_writer",
     )
 
     build_gold_tables = PythonOperator(
         task_id="build_gold_tables",
-        python_callable=run_gold,
+        python_callable=failpoint("build_gold_tables", run_gold),
         pool="silver_writer",
     )
 
     validate_athena = PythonOperator(
         task_id="validate_with_athena",
-        python_callable=run_validations,
+        python_callable=failpoint("validate_with_athena", run_validations),
         op_kwargs={"batch_run_id": "{{ dag_run.conf.get('run_id', '') }}"},
     )
 
