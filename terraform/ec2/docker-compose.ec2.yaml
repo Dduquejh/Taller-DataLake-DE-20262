@@ -1,0 +1,30 @@
+# Override de docker-compose.yaml para la instancia EC2. user_data lo copia
+# a la raíz del repo y lo activa con COMPOSE_FILE en .env, así que en la
+# instancia basta con "docker compose ..." como en local.
+#
+# Las claves de docker-compose.yaml están en el repo público: con ellas
+# cualquiera que llegue al puerto 8080 podría firmar sus propios JWT. Aquí se
+# reemplazan por valores aleatorios que user_data genera en .env. Compose
+# combina "environment" por clave, así que el resto del entorno se conserva.
+#
+# Las credenciales de AWS no se tocan: el montaje .secrets/aws se mantiene y
+# user_data deja ahí solo un config con la región (ver user_data.sh.tftpl).
+x-airflow-ec2-environment: &airflow-ec2-environment
+  AIRFLOW__API__SECRET_KEY: ${AIRFLOW_API_SECRET_KEY:?Falta AIRFLOW_API_SECRET_KEY en .env}
+  AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:?Falta AIRFLOW_JWT_SECRET en .env}
+
+services:
+  airflow-init:
+    environment: *airflow-ec2-environment
+
+  airflow-apiserver:
+    environment: *airflow-ec2-environment
+
+  airflow-scheduler:
+    environment: *airflow-ec2-environment
+
+  airflow-dag-processor:
+    environment: *airflow-ec2-environment
+
+  airflow-triggerer:
+    environment: *airflow-ec2-environment

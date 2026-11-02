@@ -1,0 +1,94 @@
+#!/bin/bash
+# Arranque de la instancia: instala Docker, clona el repo y levanta Airflow.
+# cloud-init lo ejecuta como root una sola vez; la salida queda en
+# /var/log/cloud-init-output.log.
+#
+# Plantilla de Terraform: las variables entre llaves con signo de dólar las
+# sustituye templatefile; las de bash se escriben sin llaves para no chocar.
+set -euo pipefail
+
+APP_DIR="${app_dir}"
+
+echo "== Instalando docker y git"
+dnf install -y docker git
+
+# Amazon Linux 2023 no empaqueta los plugins compose ni buildx.
+case "$(uname -m)" in
+  x86_64)  COMPOSE_ARCH=x86_64;  BUILDX_ARCH=amd64 ;;
+  aarch64) COMPOSE_ARCH=aarch64; BUILDX_ARCH=arm64 ;;
+  *) echo "Arquitectura no soportada: $(uname -m)" >&2; exit 1 ;;
+esac
+
+PLUGINS_DIR=/usr/local/lib/docker/cli-plugins
+mkdir -p "$PLUGINS_DIR"
+curl -fsSL -o "$PLUGINS_DIR/docker-compose" \
+  "https://github.com/docker/compose/releases/download/${docker_compose_version}/docker-compose-linux-$COMPOSE_ARCH"
+curl -fsSL -o "$PLUGINS_DIR/docker-buildx" \
+  "https://github.com/docker/buildx/releases/download/${docker_buildx_version}/buildx-${docker_buildx_version}.linux-$BUILDX_ARCH"
+chmod 755 "$PLUGINS_DIR/docker-compose" "$PLUGINS_DIR/docker-buildx"
+
+systemctl enable --now docker
+usermod -aG docker ec2-user
+
+# Swap de respaldo: con 4 GiB, el build de la imagen mientras Postgres y
+# Airflow arrancan puede agotar la RAM y el kernel mataría procesos.
+if [ ! -f /swapfile ]; then
+  echo "== Creando swap de 2 GiB"
+  dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  echo '/swapfile none swap defaults 0 0' >> /etc/fstab
+fi
+
+echo "== Clonando ${repo_url} (${repo_branch})"
+if [ ! -d "$APP_DIR/.git" ]; then
+  git clone --depth 1 --branch "${repo_branch}" "${repo_url}" "$APP_DIR"
+fi
+cd "$APP_DIR"
+
+cat > docker-compose.ec2.yaml <<'COMPOSE'
+${compose_override}
+COMPOSE
+
+# logs/ y plugins/ no están en git. Si no existen, Docker los crea como
+# root al montarlos y Airflow (que corre con AIRFLOW_UID) no puede escribir.
+mkdir -p logs plugins
+
+# docker-compose.yaml define AWS_PROFILE=default y monta .secrets/aws. Sin
+# un perfil "default", boto3 falla con ProfileNotFound antes de buscar
+# credenciales. Se crea un config con solo la región y sin archivo
+# credentials: boto3 recorre la cadena hasta el rol de la instancia (IMDS).
+mkdir -p .secrets/aws
+cat > .secrets/aws/config <<AWSCONFIG
+[default]
+region = ${aws_region}
+AWSCONFIG
+chmod 755 .secrets .secrets/aws
+chmod 644 .secrets/aws/config
+
+AIRFLOW_UID=$(id -u ec2-user)
+API_SECRET_KEY=$(openssl rand -hex 32)
+JWT_SECRET=$(openssl rand -hex 32)
+
+# Sin credenciales: llegan del rol de la instancia. Las claves de Airflow
+# son propias de esta instancia y no salen de ella.
+cat > .env <<DOTENV
+S3_BUCKET=${bucket_name}
+AWS_REGION=${aws_region}
+ATHENA_WORKGROUP=${athena_workgroup}
+ATHENA_DATABASE=${glue_database}
+AIRFLOW_UID=$AIRFLOW_UID
+COMPOSE_FILE=docker-compose.yaml:docker-compose.ec2.yaml
+AIRFLOW_API_SECRET_KEY=$API_SECRET_KEY
+AIRFLOW_JWT_SECRET=$JWT_SECRET
+DOTENV
+chmod 600 .env
+
+chown -R ec2-user:ec2-user "$APP_DIR"
+
+echo "== Levantando Airflow"
+docker compose up -d --build
+docker compose ps
+
+echo "== Arranque terminado"
