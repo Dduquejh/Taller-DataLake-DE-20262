@@ -311,9 +311,11 @@ terraform -chdir=terraform/catalog destroy -var aws_profile=admin
 terraform -chdir=terraform/iam     destroy -var aws_profile=admin
 
 # 4. Vaciar el bucket con todas sus versiones y marcadores de borrado
-#    (Terraform no borra un bucket con contenido)
+#    (Terraform no borra un bucket con contenido). Usa las credenciales
+#    exportadas arriba: boto3 no lee directamente un perfil de "aws login"
+#    sin el paquete botocore[crt].
 BUCKET=$(terraform -chdir=terraform/s3 output -raw bucket_name)
-.venv/bin/python -c "import boto3, sys; boto3.Session(profile_name='admin').resource('s3').Bucket(sys.argv[1]).object_versions.delete()" "$BUCKET"
+.venv/bin/python -c "import boto3, sys; boto3.Session(region_name='us-east-2').resource('s3').Bucket(sys.argv[1]).object_versions.delete()" "$BUCKET"
 
 # 5. El bucket
 terraform -chdir=terraform/s3      destroy
